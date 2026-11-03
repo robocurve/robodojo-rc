@@ -1,0 +1,148 @@
+[build-system]
+requires = ["hatchling>=1.18", "hatch-vcs>=0.3", "hatch-fancy-pypi-readme>=24.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robodojo-rc"
+dynamic = ["version", "readme"]
+description = "RoboDojo-RC Tier 1: six of RoboDojo's real-world manipulation tasks with pinned rubrics and the judge behind every published score, built on Inspect Robots."
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Robocurve" }]
+keywords = ["robotics", "benchmark", "llm-agents", "vla", "bimanual", "manipulation", "robodojo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = ["inspect-robots>=0.58", "numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/robocurve/robodojo-rc"
+Results = "https://robocurve.org/all-runs/"
+Collection = "https://github.com/robocurve/worldevals"
+Framework = "https://github.com/robocurve/inspect-robots"
+"RoboDojo" = "https://robodojo-benchmark.com/"
+
+# Inspect Robots resolves from PyPI and discovers these installed entry points.
+[project.entry-points."inspect_robots.tasks"]
+"robodojo-rc/pack_and_pour_fruit" = "robodojo_rc.tasks:pack_and_pour_fruit"
+"robodojo-rc/stack_bowls" = "robodojo_rc.tasks:stack_bowls"
+"robodojo-rc/store_in_safe" = "robodojo_rc.tasks:store_in_safe"
+"robodojo-rc/cap_pen" = "robodojo_rc.tasks:cap_pen"
+"robodojo-rc/stand_up_bottles" = "robodojo_rc.tasks:stand_up_bottles"
+"robodojo-rc/sort_objects" = "robodojo_rc.tasks:sort_objects"
+
+[project.entry-points."inspect_robots.graders"]
+robodojo_astra = "robodojo_rc.grader:astra_grader"
+robodojo_operator = "robodojo_rc.grader:operator_grader"
+
+[project.entry-points."inspect_robots.scorers"]
+rubric_score = "robodojo_rc.scoring:rubric_score"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robodojo_rc"]
+
+
+# ---------------------------------------------------------------------------
+# Versioning: single-source the version from git tags via hatch-vcs.
+# ---------------------------------------------------------------------------
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# Before/without tags (e.g. shallow CI checkouts), fall back instead of failing.
+version_scheme = "guess-next-dev"
+fallback_version = "0.0.0"
+
+[tool.ruff]
+# _workbench.py is the published judge copied byte for byte; its hash is pinned by a test.
+extend-exclude = ["src/robodojo_rc/_workbench.py"]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "D1"]
+ignore = ["D105", "D107"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
+# Instruction and rubric text are copied exactly from the release (long lines, a "×" sign).
+"src/robodojo_rc/specs.py" = ["E501", "RUF001"]
+"tools/**" = ["D1"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["robodojo_rc"]
+
+[tool.mypy]
+# numpy >= 2.5 ships stubs that use PEP 695 `type` statements, which mypy only
+# accepts when targeting >= 3.12, so type-check against 3.12 while runtime
+# support stays >= 3.10 (ruff's target-version enforces the 3.10 syntax floor).
+python_version = "3.12"
+strict = true
+files = ["src/robodojo_rc"]
+# The verbatim judge has no annotations; typed callers may still call it.
+untyped_calls_exclude = ["robodojo_rc._workbench"]
+
+[[tool.mypy.overrides]]
+module = "robodojo_rc._workbench"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["robodojo_rc"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "^\\s*\\.\\.\\.$",
+    ": \\.\\.\\.$",
+    "pragma: no cover",
+    # The judge's MP4 readers (verbatim, ffmpeg-based); the grader reads frames from the record.
+    "^def executable\\(",
+    "^def extract_clips\\(",
+]
+
+# PyPI readme: identical to README.md except GitHub-only alert syntax
+# (e.g. `> [!NOTE]`) is rewritten to bold blockquotes, which PyPI renders.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?m)^> \[!NOTE\][ \t]*$'
+replacement = '> **Note:**'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?m)^> \[!IMPORTANT\][ \t]*$'
+replacement = '> **Important:**'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?m)^> \[!WARNING\][ \t]*$'
+replacement = '> **Warning:**'
