@@ -54,12 +54,44 @@ jobs:
       - name: Pytest (100% coverage gate)
         run: uv run pytest --cov --cov-report=term-missing
 
+  # The oldest supported Inspect Robots (pyproject's floor). 0.59 and 0.60 handle an unscored
+  # trial differently from later versions, so the integration tests run on both sides.
+  compat-min:
+    name: test (inspect-robots 0.59.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install inspect-robots 0.59.0
+        run: |
+          uv venv --python 3.12
+          uv pip install -e . "inspect-robots==0.59.0" pytest
+      - name: Pytest
+        run: uv run --no-sync pytest -q
+
+  # Unreleased Inspect Robots: a heads-up when the next release would break us. Not in ci-ok.
+  compat-main:
+    name: test (inspect-robots main, informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install inspect-robots main
+        run: |
+          uv venv --python 3.12
+          uv pip install "inspect-robots @ git+https://github.com/robocurve/inspect-robots" pytest
+          uv pip install --no-deps -e .
+      - name: Pytest
+        run: uv run --no-sync pytest -q
+
   # Single required status check for branch protection: green iff every job
-  # above is green. Add new jobs to 'needs' here or they won't gate merges.
+  # above is green (except compat-main). Add new jobs to 'needs' here or they won't gate merges.
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [quality, test]
+    needs: [quality, test, compat-min]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every needed job succeeded
@@ -72,7 +104,7 @@ jobs:
   alert-red-main:
     name: alert on red main
     if: ${{ failure() && github.event_name == 'push' }}
-    needs: [quality, test]
+    needs: [quality, test, compat-min]
     runs-on: ubuntu-latest
     permissions:
       issues: write

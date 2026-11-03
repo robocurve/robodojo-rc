@@ -11,7 +11,7 @@ rubric, from 0 to 1. A model's task score is the mean of its 20 trials, and its 
 is the mean of its six task scores.
 
 > [!NOTE]
-> This release (1.0.0) covers LLM agents. VLA policies ran to a step cap in the published runs
+> Benchmark release 1.0.0 covers LLM agents. VLA policies ran to a step cap in the published runs
 > and their scores were still rising there, so their numbers are not comparable with these until
 > VLAs have a stopping rule of their own.
 
@@ -54,12 +54,14 @@ scorer reads.
   high) sees the three cameras (`top_cam`, `left_cam`, `right_cam`) at one frame per second of
   30 fps playback plus the final frame, with the instruction and the task's rubric, and picks one
   rubric score. Needs `OPENAI_API_KEY`. The model's own claim to be done is not evidence.
-- **`robodojo_operator`:** shows the rubric and asks the person at the terminal for a score.
+- **`robodojo_operator`:** shows the whole rubric (guidance and levels) and asks the person at
+  the terminal for a score.
 
-A trial the judge cannot grade (an API error, an answer without a valid score) is left ungraded
-with the reason in the log, and abstains instead of scoring 0. Score it by hand from the video.
-Inspect Robots' own `operator` and `vlm` graders record success or failure, which is not a rubric
-score, so those trials abstain too.
+A trial with no rubric score (the judge failed or gave no valid score, or the person skipped it)
+is left out of the task score instead of counting as 0, and the run's log is marked as an error
+with the reason. Score it by hand from the video. A console verdict (`/y`, `/n`, `/p`) is not a
+rubric score, so both graders still grade that trial. Inspect Robots' own `operator` and `vlm`
+graders only record success or failure, so their trials are left out too.
 
 Differences from the published grades: the published judge read its frames from H.264 clips
 rendered for review, while `robodojo_astra` reads the same frames from the trial record before
@@ -87,6 +89,14 @@ Scores compare when they come from the same release and protocol. The published 
   or camera), overheats from heat left by the previous trial, batches restarted after a setup
   change, and interrupted tries.
 
+Inspect Robots applies only part of this counting. It never grades or scores a trial that ended
+in an error, and `--epochs 20` does not replace a trial that was set aside. To match the protocol:
+
+1. Read each errored trial's reason in the log. Rerun infrastructure failures with the same model.
+2. Score model errors by hand from the trial's video (`inspect-robots video <log>`) and count
+   them.
+3. Run more trials until each model has 20 counted, scored trials on each task.
+
 An LLM agent on a YAM rig, from a rig directory with `./run` and `config.ini`:
 
 ```bash
@@ -110,8 +120,9 @@ judge's rubric keeps that name.
 
 ## Development
 
-Inspect Robots comes from PyPI (`inspect-robots>=0.58`). After changing dependencies, run
-`uv lock` and commit `uv.lock`.
+Inspect Robots comes from PyPI. The package needs 0.59 or later: 0.58 cannot leave an unscored
+trial out of a task score. CI also runs the tests against 0.59.0 and Inspect Robots main. After
+changing dependencies, run `uv lock` and commit `uv.lock`.
 
 ```bash
 uv sync --locked --extra dev && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest --cov
@@ -129,7 +140,7 @@ modules, classes, and functions. Task pages are generated from `specs.py` with
   title   = {RoboDojo-RC Tier 1: RoboDojo real-world tasks with pinned rubrics and judge},
   year    = {2026},
   url     = {https://github.com/robocurve/robodojo-rc},
-  version = {1.0.0},
+  version = {1.0.1},
   license = {MIT}
 }
 ```
