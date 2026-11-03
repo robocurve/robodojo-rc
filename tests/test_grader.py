@@ -42,21 +42,35 @@ def reply(text: str, *, model: str = "gpt-6-astra", finish: str = "stop") -> dic
 
 
 class Judge:
-    """Stands in for the OpenAI call: keeps every request, answers with ``answer``."""
+    """Stands in for the OpenAI call: keeps every request, answers in turn (the last repeats)."""
 
-    def __init__(self, answer: str | Exception = "The cap is on.\nSCORE: 0.75") -> None:
-        self.answer = answer
+    def __init__(self, *answers: str | Exception) -> None:
+        self.answers = list(answers) or ["The cap is on.\nSCORE: 0.75"]
         self.requests: list[dict[str, Any]] = []
 
     def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
         self.requests.append(request)
-        if isinstance(self.answer, Exception):
-            raise self.answer
-        return reply(self.answer)
+        answer = self.answers[min(len(self.requests), len(self.answers)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return reply(answer)
 
 
-def run(grader: Any, *, steps: int = 61, rig: ThreeCameraRig | None = None, **kwargs: Any) -> Any:
-    task = replace(make_task(CAP_PEN, max_steps=steps), epochs=Epochs(count=1, reducer="mean"))
+def ungraded_run(log: Any) -> bool:
+    """The run says some trials went unscored (wording differs between Inspect Robots versions)."""
+    text = f"{log.error} {[s.error for s in log.samples]}"
+    return log.status == "error" and ("not scored" in text or "ungraded" in text)
+
+
+def run(
+    grader: Any,
+    *,
+    steps: int = 61,
+    rig: ThreeCameraRig | None = None,
+    trials: int = 1,
+    **kwargs: Any,
+) -> Any:
+    task = replace(make_task(CAP_PEN, max_steps=steps), epochs=Epochs(count=trials, reducer="mean"))
     rig = rig or ThreeCameraRig()
     with patch("inspect_robots.eval._git_commit", return_value=None):
         (log,) = rl_eval(
@@ -140,7 +154,7 @@ def test_ungradable_trials_abstain(answer: str | Exception, rig: Any, why: str) 
     assert sample.reduced.get("rubric_score") is None
     assert why in sample.trial_metadata[0]["grading_error"]
     assert sample.operator_judgements == (None,)
-    assert log.status == "error" and "not scored" in (log.error or "") + str(sample.error)
+    assert ungraded_run(log)
 
 
 def test_over_budget_evidence_is_left_for_a_person(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,11 +163,51 @@ def test_over_budget_evidence_is_left_for_a_person(monkeypatch: pytest.MonkeyPat
     assert "45 MB" in log.samples[0].trial_metadata[0]["grading_error"]
 
 
-def test_a_recorded_judgement_is_kept() -> None:
+def test_a_recorded_rubric_score_is_kept() -> None:
     judge = Judge()
     record = TrialRecord(scene_id="cap_pen", epoch=0, seed=0, operator_judgement="0.5")
     AstraGrader(post=judge).grade(record, make_task(CAP_PEN).scenes[0])
     assert judge.requests == [] and record.operator_judgement == "0.5"
+
+
+@pytest.mark.parametrize("verdict", ["y", "n", "partial", "0.3"])
+def test_a_console_verdict_does_not_stop_the_judge(verdict: str) -> None:
+    judge = Judge()
+    log_records: list[TrialRecord] = []
+
+    class Console(AstraGrader):
+        def grade(self, record: TrialRecord, scene: Scene) -> None:
+            record.operator_judgement = verdict  # what /y, /n or /p leaves on the record
+            super().grade(record, scene)
+            log_records.append(record)
+
+    log = run(Console(post=judge))
+    assert len(judge.requests) == 1
+    assert log.samples[0].reduced["rubric_score"] == 0.75
+    assert log_records[0].metadata["console_verdict"] == verdict
+
+
+def test_judge_failure_after_a_console_verdict_is_still_flagged() -> None:
+    class Console(AstraGrader):
+        def grade(self, record: TrialRecord, scene: Scene) -> None:
+            record.operator_judgement = "y"
+            super().grade(record, scene)
+
+    log = run(Console(post=Judge(OSError("Astra API HTTP 503"))))
+    (sample,) = log.samples
+    assert sample.operator_judgements == (None,)
+    assert "HTTP 503" in sample.trial_metadata[0]["grading_error"]
+    assert ungraded_run(log)
+
+
+def test_an_ungraded_trial_is_left_out_of_the_mean_not_scored_zero() -> None:
+    judge = Judge("SCORE: 1", OSError("Astra API HTTP 500"), "SCORE: 0.5")
+    log = run(AstraGrader(post=judge), steps=4, trials=3)
+    (sample,) = log.samples
+    assert len(judge.requests) == 3
+    assert sample.operator_judgements == ("1", None, "0.5")
+    assert sample.reduced["rubric_score"] == 0.75  # (1 + 0.5) / 2, not (1 + 0 + 0.5) / 3
+    assert ungraded_run(log)
 
 
 def test_a_scene_without_a_rubric_is_not_graded(capsys: pytest.CaptureFixture[str]) -> None:
@@ -173,8 +227,11 @@ def test_no_steps_means_nothing_to_judge() -> None:
 def test_preflight_and_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("FINAL_JUDGE_ENV_FILE", raising=False)
-    grader = resolve("grader", "robodojo_astra")
-    assert isinstance(grader, AstraGrader) and grader.name == "robodojo_astra"
+    # Built from the registry (as --grader does), it refuses before any trial runs.
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        resolve("grader", "robodojo_astra")
+    grader = AstraGrader()
+    assert grader.name == "robodojo_astra"
     with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
         grader.preflight()
     monkeypatch.setenv("FINAL_JUDGE_ENV_FILE", "/somewhere/keys.env")
@@ -182,6 +239,7 @@ def test_preflight_and_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FINAL_JUDGE_ENV_FILE")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     grader.preflight()
+    assert isinstance(resolve("grader", "robodojo_astra"), AstraGrader)
     AstraGrader(post=Judge()).preflight()  # an injected transport needs no key
     assert grader.config() == {"judge": JUDGE_VERSION, **_workbench.SETTINGS}
 
@@ -264,6 +322,9 @@ def test_operator_scores_through_eval() -> None:
     assert sample.trial_metadata[0]["robodojo_rubric_revision"] == "02bd043f5381"
     assert session.statuses == [None]
     assert session.lines[0] == "rubric: Cap Pen (revision 02bd043f5381)"
+    # The guidance decides between levels, so the person sees it, word for word.
+    guidance = CAP_PEN.rubric.guidance.splitlines()
+    assert session.lines[1 : 1 + len(guidance)] == [f"  {line}" for line in guidance]
     assert (
         "  0.75: Pen and cap touch while both are held in the air. No alignment requirement."
         in (session.lines)
@@ -274,28 +335,45 @@ def test_operator_scores_through_eval() -> None:
 
 
 @pytest.mark.parametrize(
-    ("replies", "judgement", "note"),
+    ("replies", "judgement", "note", "error"),
     [
-        (("skip",), None, None),
-        ((EOFError,), None, None),
-        (("1", EOFError), "1", None),
-        (("0", ""), "0", None),
+        (("skip",), None, None, "scoring skipped at the terminal"),
+        ((EOFError,), None, None, "no score given at the terminal (input closed)"),
+        (("1", EOFError), "1", None, None),
+        (("0", ""), "0", None, None),
     ],
 )
 def test_operator_answers(
-    replies: tuple[Any, ...], judgement: str | None, note: str | None, capsys: Any
+    replies: tuple[Any, ...],
+    judgement: str | None,
+    note: str | None,
+    error: str | None,
+    capsys: Any,
 ) -> None:
     record = TrialRecord(scene_id="cap_pen", epoch=0, seed=0)
     OperatorGrader(input_fn=answers(*replies)).grade(record, make_task(CAP_PEN).scenes[0])
     assert record.operator_judgement == judgement
     assert record.operator_note == note
+    assert record.metadata.get("grading_error") == error
     assert "rubric: Cap Pen" in capsys.readouterr().out
 
 
-def test_operator_keeps_a_judgement_and_needs_a_rubric(capsys: Any) -> None:
+def test_operator_skip_is_flagged_not_averaged_away() -> None:
+    log = run(OperatorGrader(input_fn=answers("1", "", "skip")), steps=4, trials=2)
+    (sample,) = log.samples
+    assert sample.operator_judgements == ("1", None)
+    assert sample.reduced["rubric_score"] == 1.0
+    assert ungraded_run(log)
+
+
+def test_operator_keeps_a_rubric_score_and_needs_a_rubric(capsys: Any) -> None:
     record = TrialRecord(scene_id="cap_pen", epoch=0, seed=0, operator_judgement="1")
     OperatorGrader(input_fn=answers()).grade(record, make_task(CAP_PEN).scenes[0])
     assert record.operator_judgement == "1"
+    record = TrialRecord(scene_id="cap_pen", epoch=0, seed=0, operator_judgement="y")
+    OperatorGrader(input_fn=answers("0.2", "")).grade(record, make_task(CAP_PEN).scenes[0])
+    assert record.operator_judgement == "0.2"
+    assert record.metadata["console_verdict"] == "y"
     record = TrialRecord(scene_id="x", epoch=0, seed=0)
     OperatorGrader(input_fn=answers()).grade(record, Scene(id="x", instruction="Do it."))
     assert "no RoboDojo-RC rubric" in record.metadata["grading_error"]

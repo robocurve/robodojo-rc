@@ -5,9 +5,10 @@ and ``robodojo_operator`` graders record the chosen level as the trial's judgeme
 ``"0.75"``); this scorer only reads it, so a saved log scores the same way again.
 
 A trial with no valid rubric score is never scored 0: it was not graded, so a person scores it.
-Inspect Robots versions that support abstentions get an abstained score. Earlier versions (0.58
-to 0.60, which have none) get ``NotScored`` raised instead, which leaves the trial out of the
-mean and marks the run's log as an error with the reason.
+Inspect Robots versions that support abstentions (after 0.60) get an abstained score. 0.59 and
+0.60 have none, so they get ``NotScored`` raised instead, which leaves the trial out of the mean
+and marks the run's log as an error with the reason. 0.58 cannot leave a trial out at all, so
+the package needs 0.59 or later.
 """
 
 from __future__ import annotations

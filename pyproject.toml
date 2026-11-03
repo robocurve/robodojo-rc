@@ -19,7 +19,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-dependencies = ["inspect-robots>=0.58", "numpy>=1.24"]
+# 0.59 is the first version that leaves a trial out when its scorer raises (see scoring.py).
+dependencies = ["inspect-robots>=0.59", "numpy>=1.24"]
 
 [project.optional-dependencies]
 dev = [

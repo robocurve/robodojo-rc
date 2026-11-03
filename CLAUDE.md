@@ -24,6 +24,9 @@ pinned rubric by the published judge or by hand.
   `Score 0`, not `Score 0.0`.
 - Entry-point name, `@task` name and `Task.name` match exactly: `robodojo-rc/<key>`. Keep the
   WorldEvals catalog's `task_keys` in sync.
+- Inspect Robots 0.59 is the floor: `rubric_score` raises `NotScored` there (0.59 and 0.60
+  leave the trial out) and abstains on later versions. Keep the integration tests passing on
+  0.59.0, the locked version and main (CI's `compat-min` and `compat-main`).
 - Scene metadata is JSON-native; `metadata["rubric"]` is a non-blank string so Inspect Robots
   prints it above an operator prompt.
 

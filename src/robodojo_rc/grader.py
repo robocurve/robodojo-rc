@@ -1,16 +1,20 @@
 """Graders: the judge behind every published score, and scoring by hand at the terminal.
 
-``robodojo_astra`` grades a trial the way every published RoboDojo-RC Tier 1 trial was graded.
-GPT-6 Astra (reasoning effort high) sees the three cameras at one frame per second of 30 fps
-playback plus the final frame, with the task instruction and its rubric, and picks one rubric
-score. The prompt, request and answer checks are the published judge's own code
-(``_workbench.py``). The published grades read those frames from the H.264 clips rendered for
-review; this grader reads the same frames from the trial record, before compression.
+``robodojo_astra`` uses the judge behind every published RoboDojo-RC Tier 1 score: GPT-6 Astra
+(reasoning effort high) sees the three cameras at one frame per second of 30 fps playback plus
+the final frame, with the task instruction and its rubric, and picks one rubric score. The
+prompt, request and answer checks are the published judge's own code (``_workbench.py``). Two
+things differ from the published grades: they read those frames from the H.264 clips rendered
+for review, while this grader reads them from the trial record before compression, and they
+switched to JPEG when a trial's PNG frames passed 45 MB, while this grader leaves such a trial
+for a person.
 
-``robodojo_operator`` shows the rubric and asks the person at the terminal for a score.
+``robodojo_operator`` shows the whole rubric and asks the person at the terminal for a score.
 
 Both record the score as the trial's judgement (``"0.75"``) for the ``rubric_score`` scorer. A
-trial the judge cannot grade is left ungraded with ``metadata["grading_error"]`` and abstains.
+console verdict (``/y``, ``/n``, ``/p``) is not a rubric score, so both still grade such a trial.
+A trial neither could score keeps the reason in ``metadata["grading_error"]`` and is left out of
+the task score.
 """
 
 from __future__ import annotations
@@ -150,6 +154,22 @@ def scene_rubric(scene: Scene) -> dict[str, Any]:
     return rubric
 
 
+def has_rubric_score(record: TrialRecord, rubric: Mapping[str, Any]) -> bool:
+    """Whether the record already holds one of the rubric's scores (a console ``y`` does not)."""
+    try:
+        value = float(record.operator_judgement)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return any(value == label["score"] for label in rubric["labels"])
+
+
+def _set_aside_verdict(record: TrialRecord) -> None:
+    """Move a judgement that is not a rubric score (a console ``/y``) out of the score's way."""
+    if record.operator_judgement is not None:
+        record.metadata["console_verdict"] = record.operator_judgement
+        record.operator_judgement = None
+
+
 def _one_line(exc: Exception) -> str:
     text = " ".join(str(exc).split()) or type(exc).__name__
     return text[:_ERROR_LIMIT]
@@ -169,7 +189,11 @@ class AstraGrader:
         return {"judge": JUDGE_VERSION, **_workbench.SETTINGS}
 
     def preflight(self) -> None:
-        """Refuse to start a run whose trials the judge could not grade (no OpenAI key)."""
+        """Refuse to start a run whose trials the judge could not grade (no OpenAI key).
+
+        Inspect Robots after 0.60 calls this before any trial; the registered factory also calls
+        it when the grader is built, which covers 0.59 and 0.60.
+        """
         if self._post is not _workbench.call_astra:
             return
         if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("FINAL_JUDGE_ENV_FILE")):
@@ -181,13 +205,15 @@ class AstraGrader:
     def grade(self, record: TrialRecord, scene: Scene) -> None:
         """Record the judge's rubric score, or leave the trial ungraded with the reason.
 
-        A judgement already on the record (from the console) is kept. The model's own claim to
-        be done is not evidence: every trial is judged from its frames.
+        A rubric score already on the record is kept; any other judgement (a console ``/y``) is
+        moved to ``metadata["console_verdict"]`` and the trial is judged. The model's own claim
+        to be done is not evidence: every trial is judged from its frames.
         """
-        if record.operator_judgement is not None:
-            return
         try:
             rubric = scene_rubric(scene)
+            if has_rubric_score(record, rubric):
+                return
+            _set_aside_verdict(record)
             frames, evidence = record_evidence(record)
             request = _workbench.build_request(scene.instruction, rubric, frames)
             response = self._post(request)
@@ -242,9 +268,11 @@ class OperatorGrader:
             print(line)
 
     def grade(self, record: TrialRecord, scene: Scene) -> None:
-        """Record the score the person picks; ``skip`` or closed input leaves the trial ungraded."""
-        if record.operator_judgement is not None:
-            return
+        """Record the score the person picks; ``skip`` or closed input leaves the trial ungraded.
+
+        A rubric score already on the record is kept; any other judgement (a console ``/y``) is
+        moved to ``metadata["console_verdict"]`` and the person is asked for a score.
+        """
         if self._session is not None:
             self._session.status(None)
         try:
@@ -253,7 +281,12 @@ class OperatorGrader:
             record.metadata["grading_error"] = _one_line(exc)
             self._say(f"robodojo_operator: {exc}")
             return
+        if has_rubric_score(record, rubric):
+            return
+        _set_aside_verdict(record)
         self._say(f"rubric: {rubric['name']} (revision {rubric.get('revision')})")
+        for line in str(rubric.get("guidance") or "").splitlines():
+            self._say(f"  {line}")
         for label in rubric["labels"]:
             self._say(f"  {label['score']}: {label['description']}")
         if record.truncated and record.termination_reason == "max_steps":
@@ -264,8 +297,10 @@ class OperatorGrader:
             try:
                 answer = self._input(prompt).strip()
             except EOFError:
+                record.metadata["grading_error"] = "no score given at the terminal (input closed)"
                 return
             if answer.lower() == "skip":
+                record.metadata["grading_error"] = "scoring skipped at the terminal"
                 return
             try:
                 chosen = [s for s in scores if s == float(answer)]
@@ -289,8 +324,10 @@ class OperatorGrader:
 
 @grader("robodojo_astra")
 def astra_grader() -> AstraGrader:
-    """The published RoboDojo-RC judge (GPT-6 Astra, high); needs ``OPENAI_API_KEY``."""
-    return AstraGrader()
+    """The published RoboDojo-RC judge (GPT-6 Astra, high); refuses to build without a key."""
+    built = AstraGrader()
+    built.preflight()
+    return built
 
 
 @grader("robodojo_operator")
